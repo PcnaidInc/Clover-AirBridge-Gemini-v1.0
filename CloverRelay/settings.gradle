@@ -1,0 +1,2 @@
+include(":core", ":app-mini", ":app-station")
+rootProject.name = "CloverRelay"
