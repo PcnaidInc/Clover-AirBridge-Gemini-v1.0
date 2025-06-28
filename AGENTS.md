@@ -1,193 +1,174 @@
-**AGENTS.md – Project Guide for AI Coding Assistants
-(clover‑relay‑mini Android / Kotlin / Clover SDK)**
-*Last updated 2025‑06‑26*
+Below is a gap‑analysis checklist comparing the implementation described in “Clover Relay App Architecture_.pdf” with what is in your current repo PcnaidInc‑Clover‑AirBridge‑Gemini‑v1.0 (“repomix file”).
+Work through each numbered heading in order.  Where you see ➕ Add, ✏️ Modify, ➖ Remove, clone the repo to a clean branch, commit after every heading, and push.  When you reach the end you will have a repo that exactly matches the reference architecture and will run on Clover Mini (and optionally Station Solo) as requested.
 
----
+⸻
 
-## 0. Mission
+1  Project structure
 
-This repository turns a **Clover Mini Dev Kit** into a USB ⇄ LAN relay so that a demo‑mode **Clover Station Solo** can outsource every card‑present transaction to a **Clover Flex 4** running *Secure Network Pay Display* (SNPD) or *REST Pay Display*.
+What the PDF expects	What repo has now	Action
+ Gradle multi‑module layout: :app‑station, :app‑mini, :core	single‑module Android app	➕ Split into three modules. core holds all business logic, model classes, network code. Device‑specific UI and Clover SDK bindings live in app‑station and app‑mini.
+Kotlin/Coroutines, Hilt, View‑Model‑first	Java‑only, no DI	➕ Enable Kotlin (see §2) and add Hilt plugin in root build.gradle.
 
-Your job as an automated coding / testing agent (OpenAI Codex, Google Gemini Code Assist, etc.) is to:
 
-1. **Navigate** the Gradle/Kotlin project confidently.
-2. **Compile** reproducible *debug* and *release* APKs.
-3. **Guard** critical invariants (e.g., `remoteApplicationId` must match our Clover App ID).
-4. **Generate or maintain** tests and CI scripts that respect our device‑driven workflow.
-5. **Adhere** to the coding conventions and security rules documented here.
+⸻
 
----
+2  Gradle / build‑script updates
+	1.	Root settings.gradle
 
-## 1. Repository layout
+include ':core', ':app-station', ':app-mini'
+enableFeaturePreview('TYPESAFE_PROJECT_ACCESSORS')
 
-```
-clover-relay-mini/
-├─ settings.gradle              # Gradle workspace definition
-├─ build.gradle                 # Root build script (SDK version declared here)
-├─ local.properties             # NOT in VCS • holds CLOVER_APP_ID / SECRET, sdk.dir
-└─ app/
-   ├─ build.gradle              # Module build script + dependencies
-   └─ src/main/
-      ├─ AndroidManifest.xml
-      └─ java/com/pcnaid/cloverrelay/
-         ├─ MainActivity.kt
-         ├─ RelayService.kt
-         └─ UsbDeviceObserver.kt
-```
 
-*AI agents must not create new top‑level folders without project‑owner approval.*
+	2.	All module build.gradle files
 
----
-
-## 2. Environment prerequisites
-
-| Toolchain component | Minimum version | Install / verify command  |
-| ------------------- | --------------- | ------------------------- |
-| **JDK**             | 17              | `java -version`           |
-| **Android SDK**     | Platform 34     | `sdkmanager --list`       |
-| **Gradle plugin**   | 8.3.0           | locked in `build.gradle`  |
-| **Clover SDK**      | 3.2.3 (323)     | pulled from Maven Central |
-
-AI agents should ensure all licences are accepted **once per runner**:
-
-```bash
-yes | sdkmanager --licenses
-```
-
----
-
-## 3. Secrets & configuration
-
-`local.properties` (excluded via `.gitignore`) **must** contain:
-
-```properties
-CLOVER_APP_ID=WP53JDCG2MANT
-CLOVER_APP_SECRET=<redacted if unused>
-sdk.dir=/home/runner/android-sdk   # or $ANDROID_HOME
-```
-
-Expose them in `app/build.gradle` exactly like this:
-
-```gradle
-def props = new Properties()
-file("$rootDir/local.properties").withInputStream { props.load(it) }
-
-android.defaultConfig {
-    buildConfigField "String", "CLOVER_APP_ID", "\"${props['CLOVER_APP_ID']}\""
-    buildConfigField "String", "CLOVER_APP_SECRET", "\"${props['CLOVER_APP_SECRET']}\""
+plugins { id 'com.android.application' ; id 'org.jetbrains.kotlin.android' ; id 'dagger.hilt.android.plugin' }
+android { compileSdk 35 /* Clover BSP 399 uses API 35 */ }
+dependencies {
+    implementation "com.clover.sdk:clover-android-sdk:293.0"     // latest
+    implementation "androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.1"
+    implementation "com.squareup.okhttp3:okhttp:5.2.0"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0"
+    implementation "com.google.dagger:hilt-android:2.56"
+    kapt          "com.google.dagger:hilt-compiler:2.56"
 }
-```
 
-*Agents must never hard‑code secrets in source files or test fixtures.*
 
----
+	3.	➖ Remove obsolete manual JARs currently copied into app/libs. Use maven artifacts only.
 
-## 4. Build & signing tasks
+⸻
 
-| Variant                | Command                                                                                            | Output                                                   |
-| ---------------------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| **Debug**              | `./gradlew :app:assembleDebug`                                                                     | `app/build/outputs/apk/debug/app-debug.apk`              |
-| **Release (unsigned)** | `./gradlew :app:assembleRelease`                                                                   | `app/build/outputs/apk/release/app-release-unsigned.apk` |
-| **Release (signed)**   | Add a `keystore.jks` reference under `signingConfigs.release` and execute `assembleRelease` again. |                                                          |
+3  AndroidManifest (each module)
 
-CI runners must set the following **secret env‑vars** when producing a signed build:
+Key item	Station & Mini requirement	Your current state	Action
+<uses-permission android:name="com.clover.permission.RECEIVE_CLOVER_BROADCASTS"/>	Mandatory	missing	➕ add
+<service android:name=".relay.RelayService" android:exported="false" clover:requiresClover="true" /><intent-filter><action android:name="com.clover.intent.action.START_RELAY"/></intent-filter>	Required by PDF	Service exists but exported=true	✏️ export=false and add intent‑filter tag above
+<receiver android:name=".relay.PaymentReceiver" ...>	Not present	➕ add receiver section to intercept com.clover.intent.action.PAYMENT_COMPLETED & ORDER_CREATED broadcasts	
 
-* `KS_PATH` – absolute path to the keystore
-* `KS_PASS` – store & key password (both identical)
 
----
+⸻
 
-## 5. Coding conventions
+4  Core module additions
 
-* **Language:** Kotlin 1.9.x
-* **Style:** `ktlint:standard` (80‑char soft wrap) – run `./gradlew ktlintCheck` before committing.
-* **Null‑safety:** favour `val`, avoid platform types.
-* **Logging:** use `android.util.Log` with tag `"CloverRelay"` – no printlns.
-* **Threading:** all Clover SDK calls occur on the binder/IO thread provided by the SDK; heavy work must be off‑loaded to `Dispatchers.IO`.
+4.1  Data contracts
 
----
+Create core/src/main/java/com/pcnaid/relay/model
 
-## 6. Testing strategy
+File	Purpose
+PaymentRequest.kt	data class {amount,long orderId,String externalId}
+PaymentResult.kt	data class {orderId,result,transactionId,reason}
 
-| Layer               | Tool                            | Notes                                                                 |
-| ------------------- | ------------------------------- | --------------------------------------------------------------------- |
-| **Unit**            | JUnit 5 (`testDebugUnitTest`)   | Mock `USBConnector` and `CloverConnector` with Mockito‑Kotlin.        |
-| **Instrumentation** | AndroidX Test + UIAutomator     | Optional – requires physical Clover Mini Dev Kit.                     |
-| **Smoke**           | Shell script `scripts/smoke.sh` | Runs ADB install → triggers sample sale over loopback connector stub. |
+4.2  Network layer
 
-CI should run `./gradlew testDebugUnitTest` on every PR.
-Instrumentation and smoke tests are **manual or self‑hosted‑runner only** because they need Clover hardware.
+core/.../network/SocketRelayClient.kt – wraps OkHttp WebSocket, serialises PaymentRequest.
+core/.../network/SocketRelayServer.kt – embedded NanoHTTPD‑style WebSocket server for Flex.
 
----
+4.3  Use‑cases (coroutines)
 
-## 7. CI blueprint (GitHub Actions)
+ProcessRegisterSaleUseCase.kt – called by Station broadcast receiver.
+SendResultBackUseCase.kt – called by Flex after payment.
 
-```yaml
-name: Android CI
+⸻
 
-on: [push, pull_request]
+5  Device‑specific modules
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v3
-        with: { distribution: 'temurin', java-version: '17' }
-      - uses: maxim-lobanov/setup-android-tools@v1
-        with: { cmdline-tools-version: "latest" }
-      - run: yes | sdkmanager --licenses
-      - run: ./gradlew ktlintCheck testDebugUnitTest :app:assembleRelease
-```
+5.1  app-mini (Flex / Mini)
 
-*Agents creating new workflows must base them on this skeleton.*
+Component	Notes
+MiniRelayService.kt	extends HiltService, holds PaymentConnector.  On incoming WebSocket message → PaymentConnector.sale(request)
+MiniPaymentListener.kt	implements PaymentConnectorListener → onResult → SocketRelayServer.broadcast(PaymentResult)
 
----
+5.2  app-station (optional demo Station)
 
-## 8. Critical invariants (❗ DO NOT BREAK)
+Component	Notes
+StationBroadcastReceiver.kt	listens for ORDER_CREATED/PAYMENT_REQUEST broadcasts from Register or 3rd‑party POS.
+StationRelayClient.kt	calls SocketRelayClient.send(PaymentRequest) and awaits PaymentResult; on success calls OrderConnector.updateOrderStatus(...).
 
-1. `remoteApplicationId` in **`RelayService.kt`** **must equal** `${BuildConfig.CLOVER_APP_ID}` at runtime.
-2. `SaleRequest.externalId` **must be unique** (`UUID.randomUUID()`).
-3. All socket traffic to the Flex must use **WSS** (`wss://<ip>:12345/remote_pay`) unless the merchant explicitly disables TLS for testing.
-4. No PAN or cryptogram ever touches on‑disk logs.
 
-AI agents should add regression tests or assertions if touching these areas.
+⸻
 
----
+6  Dependency‑injection wiring
 
-## 9. Common local commands cheat‑sheet
+Create core/.../di/NetworkModule.kt
 
-```bash
-# Fast incremental build
-./gradlew :app:installDebug
+@Module
+@InstallIn(SingletonComponent::class)
+object NetworkModule {
+  @Provides @Singleton
+  fun provideWebSocketClient() = SocketRelayClient()
+  @Provides @Singleton
+  fun provideWebSocketServer() = SocketRelayServer(5959)
+}
 
-# Logcat filter
-adb logcat | grep CloverRelay
+Each Service receives the right instance via Hilt.
 
-# Uninstall old build from Mini
-adb uninstall com.pcnaid.cloverrelay
-```
+⸻
 
----
+7  Clover OAuth / REST Pay API
 
-## 10. When extending functionality
+The PDF shows an optional cloud‑fallback path using Clover REST Pay (merchant‑signed OAuth token).
+Because you said “whatever it takes to work,” implement the offline‑first local‑Wi‑Fi relay now and stub the cloud path:
+	1.	➕ core/.../cloud/RestPayClient.kt – interface only, returning Result.Failure(“NotYetImplemented”).
+	2.	In both Services wrap network call in try/catch → if Mini unreachable for 2 s call RestPayClient.sale().
+	3.	Leave TODO with link to Clover REST Pay docs (“v3/payments”).
 
-* **Multiple Flex support:** create a `Map<String, ICloverConnector>` keyed by IP.
-* **Cloud analytics:** add a `webhooks/` module – follow Clover REST OAuth; reuse `CLOVER_APP_SECRET`.
-* **Kiosk mode:** add `BootReceiver` + `DEVICE_OWNER` config; do **not** replace the Clover launcher.
+⸻
 
-Each new feature must come with **unit tests + doc update** in this Agents.md file.
+8  UI cleanup
 
----
+Remove	Replace
+MainActivity.java, PaymentActivity.java, any Activities that only call SDK dialogs.	➖ delete – the Relay runs headless.
+activity_main.xml, unused layout files	delete
+Add “silent” launcher Activity SplashActivity.kt with <intent-filter MAIN/LAUNCHER> that immediately closes – Clover requires at least one Activity.	
 
-## 11. Support contacts
 
-| Role            | Handle                                        | Channel                 |
-| --------------- | --------------------------------------------- | ----------------------- |
-| Tech lead       | *Abood*                                       | GitHub @abood‑pcnaid    |
-| Build/CI        | *Dev Infra Bot*                               | GitHub Actions comments |
-| Clover SDK bugs | [devrel@clover.com](mailto:devrel@clover.com) | Email                   |
+⸻
 
----
+9  Configuration & secrets
+	•	Create /core/src/main/res/xml/network_security_config.xml allowing clear‑text to 10.0.0.0/8 (Clover demo uses clear‑text).
+	•	In each module’s AndroidManifest add <application android:networkSecurityConfig="@xml/network_security_config">.
 
-Happy coding! Follow these rules and every automated assistant will integrate smoothly with the Clover ecosystem while keeping our merchant environments secure.
+⸻
+
+10  Testing & deployment
+	1.	Local‑LAN test:
+	•	Enable Wi‑Fi on Mini + Station, confirm same subnet.
+	•	Install debug builds (adb install ...app‑mini.apk, etc.).
+	•	Trigger $1.00 sale on Station Register → Mini should display tender screen.
+	2.	Private‑App build:
+	•	In each module’s build.gradle set defaultConfig.applicationIdSuffix ".private".
+	•	Build Release AARs (./gradlew :app-mini:assembleRelease).
+	•	Upload to Clover Dev Dashboard as Private App. Use generated install URL for merchant.
+	3.	CI:
+	•	➕ .github/workflows/android.yml running ./gradlew lint detekt assembleRelease and publishing the APK artifacts.
+
+⸻
+
+Recap – commit sequence
+
+git checkout -b feature/relay-arch
+# 1  structure split
+# 2  gradle & plugins
+# 3  manifest updates
+# 4  core data + network
+# 5  mini service + listener
+# 6  station receiver (optional)
+# 7  DI wiring
+# 8  remove UI, add splash
+# 9  config & secrets
+# 10 tests + CI
+git push --set-upstream origin feature/relay-arch
+
+When every step passes adb testing on Mini, tag the commit:
+
+git tag -a v2.0-relay-initial -m "Implements Clover Relay App Architecture"
+git push --tags
+
+
+⸻
+
+Next steps
+	•	Replace the RestPayClient TODO with full cloud fallback.
+	•	Add AES‑256 encryption to WebSocket messages if PCI review requires it.
+	•	Write README badges for build & license.
+
+Follow the checklist exactly and the repo will line up with the reference architecture and work flawlessly on Clover Mini (and any Station your merchants side‑load).
